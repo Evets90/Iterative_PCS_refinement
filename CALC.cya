@@ -1,0 +1,72 @@
+syntax cycles=@i=2
+
+python:=python3
+
+if (master) then
+  system "rm -rf [1-20].pdb [1-20]_*; cp model.pdb 1.pdb"
+
+  # Generate metal centers and ORI - first outside of the main loop
+  system "$python process.py 1.pdb NPC_tag_1.npc NPC_tag_2.npc NPC_tag_3.npc"
+  
+  
+end if
+
+do cycle 1 cycles
+  if (master) then
+    
+    # Generate UPL and ACO
+    cyanalib
+    read seq SEQ.seq
+    read pdb {$cycle}_best.pdb
+    modules:=1-32, 33-74, 75-116, 117-158, 159-200, 201-239
+    reference:=m1.pdb
+    do j 1 length('modules')
+      atom select "HEAVY $modules(j)"
+      write m$j.pdb selected
+      if (j.gt.1) reference:=$reference,m$j.pdb
+    end do
+    regularize reference=$reference prefix={$cycle}_regula upl=0.01 keep
+    system "touch SEQ.seq"
+    
+	system "grep -v 'CHI' {$cycle}_regula.aco > {$cycle}_regula_new.aco"
+	
+  end if
+  synchronize
+  
+  # Structure calculation
+  cyanalib
+  read lib {$cycle}_regula.lib append
+  read seq {$cycle}_regula.seq
+  read upl {$cycle}_regula.upl
+  read aco {$cycle}_regula_new.aco
+  read lol {$cycle}_ORI_LOL.lol
+  read upl {$cycle}_ORI_UPL.upl append
+  read pcs {$cycle}_metal_centers.pcs
+  read pcs PCS.pcs append
+  weight_upl=1.0
+  weight_pcs=30.0
+  weight_aco=5.0
+  weight_vdw=2.0
+  anneal_weight_upl := 1.0, 1.0, 1.0, 1.0
+  anneal_weight_pcs := 1.0, 1.0, 1.0, 1.0
+  anneal_weight_aco := 1.0, 1.0, 1.0, 1.0
+  anneal_weight_vdw := 0.25, 0.25, 0.25, 1.0
+  seed=1215
+  nproc=16
+  calc_all structures=50 steps=25000
+  overview ${cycle+1}.ovw structures=30 range=3-238 pdb
+  
+  if (master) then
+    cyanalib
+    read SEQ.seq
+    read ${cycle+1}.pdb unknown=skip
+    write ${cycle+1}.pdb all
+    
+    # Generate metal centers and ORI
+    system "$python process.py ${cycle+1}.pdb NPC_tag_1.npc NPC_tag_2.npc NPC_tag_3.npc"
+    
+  end if
+  
+   
+  
+end do

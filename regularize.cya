@@ -1,0 +1,255 @@
+# Copyright (c) 2002-20 Peter Guentert. All rights reserved.
+## 7MACROS: regularize - CYANA macro
+##
+## Parameters: upl=<real>                     (default: 0.3)
+##             weightupl=<real>               (default: 0.1)
+##             widthaco=<real>                (default: 60.0)
+##             weightaco=<real>               (default: 0.1)
+##             structures=<integer>           (default: 25)
+##             steps=<integer>                (default: 10000)
+##             prefix=<string>                (default: regula)
+##
+## This command regularizes the given structure using distance restraints with
+## upper bound <upl> and relative weight <weightupl> between corresponding atoms
+## in the input structure and in the regularized structure. In addition, torsion
+## angle restraints centered on the torsion angle values of the input structure
+## with a total width of the allowed interval of <widthaco> degrees and a relative
+## weight of <weightaco> can be applied. The given number of <structures> are
+## calculated using the given number of torsion angle dynamics <steps> for each
+## conformer. The name of the output and intermediate files starts with <prefix>.
+##
+
+var c c1 c2 c3 d dummy echo info i j k m mean n ndom nreg rms tmp type types
+
+syntax reference=*= upl=0.0<@r=0.3 weightupl=0.0<=@r=0.1 widthaco=@r=20.0 \
+       weightaco=@r=0.1 structures=@i=25 steps=@i=10000 prefix=*=regula \
+       link=*= init=*= keep
+
+echo:=off; info:=none
+types:=upl,lol,aco,cco,rdc,pcs
+mean=nstruct.gt.1
+
+if (master) then
+
+  # ------ save input data ------
+
+  atoms select save=INPUT
+  write lib $prefix-in.lib
+  write seq $prefix-in.seq
+  write pdb $prefix-in.pdb all
+  do i 1 length('types')
+    type:=$types(i)
+    if (n$type.gt.0) write $type $prefix-in.$type $if('$type'.eq.'cco','karplus',' ')
+  end do
+  if (mean) then
+    print
+    print "    Input structure bundle:"
+    print
+    rmsd
+    print
+  end if
+
+  # ------ angle restraint file ------
+
+  if (widthaco.gt.0.0 .and. widthaco.lt.360.0 .and. weightaco.gt.0.0) then
+    makeaco selection="HEAVY / WITHCOORD" factor=$if(mean,'1.5','0.0') \
+            width=$widthaco weight=$weightaco splitdecrease=2.5
+    write aco $prefix.aco
+  end if
+
+  # ------ reference coordinates ------
+
+  ndom=length('reference')
+  if (ndom.eq.0) then
+    atom select INPUT
+    if (mean) structure mean
+    reference:=$prefix-ref.pdb
+    write pdb $reference selected
+    ndom=1
+  end if
+
+  # ------ sequence file ------
+
+  n=10+nr/25
+  write seq $prefix.tmp
+  k=0
+  do j na ifira(nr)+3 -1
+    if (anam(j).eq.'C' .or. anam(j).eq.'O' .or. anam(j).eq.'N') k=k+1
+  end do
+#  print "k=$k"
+  m=irnum(nr)
+  do j 1 ndom
+    print "$if('$link'.ne.' ','$link',if(k.ge.2,'PL','LL2')) ${m+1}" >>$prefix.tmp
+#    print "$if(k.ge.2,if('$link'.ne.' ','$link','PL'),'LL2') ${m+1}" >>$prefix.tmp
+    do i m+2 m+2+n
+      print "LL2 $i" >>
+    end do
+    nreg(j)=m+3+n
+    print "REG$j $nreg(j)" >>.
+    m=nreg(j)
+  end do
+  system "grep -v link $prefix.tmp > $prefix.seq; grep link $prefix.tmp >> $prefix.seq"
+  remove $prefix.tmp
+
+  # ------ init file ------
+
+  if (existfile('init.cya')) \
+    system "sed -e \'s/^read /\#read /\' -e \'s/ read / \#read /\' -e s/cyanalib/\#cyanalib/ -e s/amberlib/\#amberlib/ init.cya > $prefix-init.cya"
+
+  # ------ library file ------
+
+  print "COMMENT Temporary library for regularization" >$prefix.lib
+  print "\# Upper distance limits for regularization" >$prefix.upl
+  do j 1 ndom
+    read pdb $reference(j) unknown=skip
+    atom select "WITHCOORD"
+    #write pdb $prefix-ref$j.pdb
+    n=nsel+6
+    print "RESIDUE REG$j 0 ${nsel+6} 3 ${nsel+5}" >>$prefix.lib
+    print "1 Q1 DUMMY 0 0.0 0.0000 0.0000  0.0000 0 0 0 0 0" >>
+    print "2 Q2 DUMMY 0 0.0 0.7071 0.0000 -0.7071 0 0 0 0 0" >>
+    print "3 Q3 DUMMY 0 0.0 1.4142 0.0000  0.0000 0 0 0 0 0" >>
+    m=0
+    c='A'
+    do i 1 na
+      if (asel(i)) then
+        m=m+1
+        if (m.eq.1) then
+          c1=coord(i,1); c2=coord(i,2); c3=$coord(i,3)
+        end if
+        k=mod(m,1000)
+        if (k.eq.0) then
+          if (c.eq.'P') then
+            c='R'
+          else if (c.eq.'Z') then
+            c='a'
+          else if (c.eq.'z') then
+            error "Too many reference atoms for regularization."
+          else
+            c=char(ichar(c)+1)
+          end if
+        end if
+        print "${m+3} {$c}$k DUMMY 0 0.0 ${coord(i,1)-c1} ${coord(i,2)-c2} ${coord(i,3)-c3} 0 0 0 0 0" >>
+      end if
+    end do
+    print "${nsel+4} Q1 DUMMY 0 0.0 0.0000 0.0000  0.0000 0 0 0 0 0" >>
+    print "${nsel+5} Q2 DUMMY 0 0.0 0.7071 0.0000 -0.7071 0 0 0 0 0" >>
+    print "${nsel+6} Q3 DUMMY 0 0.0 1.4142 0.0000  0.0000 0 0 0 0 0" >>
+    print >>.
+
+    # ------ upper distance limit file ------
+
+    m=0
+    c='A'
+    do i 1 na
+      if (asel(i)) then
+        m=m+1
+        k=mod(m,1000)
+        if (k.eq.0) then
+          if (c.eq.'P') then
+            c='R'
+          else if (c.eq.'Z') then
+            c='a'
+          else if (c.eq.'z') then
+            error "Too many reference atoms for regularization."
+          else
+            c=char(ichar(c)+1)
+          end if
+        end if
+        print "$rnum(iar(i)) $rnam(iar(i)) $anam(i) $nreg(j) REG$j {$c}$k $upl $weightupl" >>$prefix.upl
+      end if
+    end do
+    print >>.
+  end do
+
+end if
+return
+synchronize
+
+
+# ------ regularization ------
+
+read lib $prefix.lib append
+read seq $prefix.seq
+info:=normal
+#$val('init',' ')
+if (existfile('$prefix-init.cya')) ./$prefix-init
+do i 1 length('types')
+  type:=$types(i); if (existfile('$prefix-in.$type')) read $type $prefix-in.$type
+end do
+read upl $prefix.upl append
+if (existfile('$prefix.aco')) read aco $prefix.aco append
+cut_upl=2.5*$upl
+
+calc_all $structures steps=$steps
+
+if (master) then
+  #echo:=FULL
+  #unset info
+  info:=normal
+  print
+  print "    Best 10 regularized conformers:"
+  #print "inflevel=$info"
+  overview structures=10
+  info:=none
+  info:=normal
+  write pdb $prefix-calc.pdb all
+  read seq $prefix-in.seq
+  $val('init',' ')
+  read pdb $prefix-calc.pdb unknown=skip
+  write pdb $prefix-calc.pdb all
+  write pdb $prefix.pdb
+
+  initialize
+  if (nr.eq.0) read seq $prefix-in.seq
+  print
+  print "    RMSD between reference and regularized structure:"
+  do i 1 ndom
+    read pdb $reference(i) unknown=skip
+    atom select WITHCOORD
+    read pdb $prefix.pdb append
+    dummy=rmsdmean; rms=rmsdpair
+    print "    Residues $selrangeshort ($narmsd reference atoms): $rms(F0.2) A"
+  end do
+  print
+
+  if (mean) then
+    read pdb $prefix.pdb
+    read pdb $prefix-in.pdb append
+    structure select 1..${nstruct-1}
+    do i 1 length('types')
+      type:=$types(i); if (existfile('$prefix-in.$type')) read $type $prefix-in.$type
+    end do
+    #unset info
+    info:=normal
+    print "    Regularized mean structure and original conformers 1..${nstruct-1}:"
+    structures violate
+    rmsd reference=$prefix-in.pdb
+    print "    Reference: input structure bundle."
+    print
+  end if
+end if
+synchronize
+
+
+# ------ load regularized structure ------
+
+read pdb $prefix.pdb
+if (mean) then
+  read pdb $prefix-in.pdb append
+  structure select 1..${nstruct-1}
+end if
+#structure list info=normal
+
+
+# ------ clean up ------
+
+if (master .and. .not.keep) then
+  remove $prefix-in.lib $prefix-in.seq $prefix-in.pdb $prefix.lib $prefix.seq $prefix.upl \
+         $prefix.pdb $prefix-ref.pdb $prefix-calc.ovw $prefix-calc.pdb $prefix-init.cya
+  do i 1 length('types')
+    type:=$types(i); if (existfile('$prefix-in.$type')) remove $prefix-in.$type
+  end do
+  if (existfile('$prefix.aco')) remove $prefix.aco
+end if
+synchronize
